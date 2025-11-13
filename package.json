@@ -1,0 +1,14 @@
+{
+  "name": "airbnb-scraper-ai-vision",
+  "version": "1.0.0",
+  "description": "Airbnb scraper avec analyse d'image par IA",
+  "type": "module",
+  "scripts": {
+    "start": "node screenshot_and_send.js"
+  },
+  "dependencies": {
+    "puppeteer": "^23.0.0",
+    "papaparse": "^5.4.1",
+    "node-fetch": "^3.3.2"
+  }
+}
