@@ -1,0 +1,101 @@
+name: Airbnb Scraper AI Vision
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_url:
+        description: "URL de recherche Airbnb"
+        required: true
+        default: "https://fr.airbnb.ca/s/Dubai/homes"
+      workflow_name:
+        description: "Nom de cette exécution (ex: Dubai_Marina_Run1)"
+        required: true
+        default: "Dubai_Run"
+      max_listings:
+        description: "Nombre max d'annonces à scraper"
+        required: true
+        default: "20"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Install Node dependencies
+        run: |
+          npm install
+
+      - name: Phase 1 - Scrape Listings
+        env:
+          START_URL: ${{ inputs.search_url }}
+          MAX_LISTINGS: ${{ inputs.max_listings }}
+          MAX_MINUTES: "15"
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 PHASE 1 : Scraping des annonces"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          python scrape_listings.py
+          
+          if [ -f airbnb_results.csv ]; then
+            echo "✅ Phase 1 terminée"
+            echo "📊 Nombre de lignes: $(wc -l < airbnb_results.csv)"
+          else
+            echo "❌ Erreur Phase 1"
+            exit 1
+          fi
+
+      - name: Phase 2 - Screenshots & AI Analysis
+        env:
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
+          SOURCE_WORKFLOW: ${{ inputs.workflow_name }}
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📸 PHASE 2 : Screenshots + Envoi n8n"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          node screenshot_and_send.js
+
+      - name: Upload Phase 1 Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-listings-csv
+          path: airbnb_results.csv
+        if: always()
+
+      - name: Upload Phase 2 Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-processing-report
+          path: phase2_report.json
+        if: always()
+
+      - name: Display Summary
+        if: always()
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 RÉSUMÉ DE L'EXÉCUTION"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          if [ -f phase2_report.json ]; then
+            echo "✅ Rapport Phase 2 disponible"
+            echo "📥 Téléchargez les artifacts pour voir les détails"
+          fi
