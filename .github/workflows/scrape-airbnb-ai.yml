@@ -3,16 +3,12 @@ name: Airbnb Scraper AI Vision
 on:
   workflow_dispatch:
     inputs:
-      search_url:
-        description: "URL de recherche Airbnb"
-        required: true
-        default: "https://fr.airbnb.ca/s/Dubai/homes"
       workflow_name:
         description: "Nom de cette exécution (ex: Dubai_Marina_Run1)"
         required: true
         default: "Dubai_Run"
-      max_listings:
-        description: "Nombre max d'annonces à scraper"
+      max_listings_per_page:
+        description: "Nombre max d'annonces PAR page de recherche"
         required: true
         default: "20"
 
@@ -44,10 +40,20 @@ jobs:
         run: |
           npm install
 
+      - name: Verify search_urls.txt exists
+        run: |
+          if [ ! -f search_urls.txt ]; then
+            echo "❌ ERREUR: Fichier search_urls.txt introuvable!"
+            echo "Créez ce fichier avec vos URLs de pages de recherche (une URL par ligne)"
+            exit 1
+          fi
+          echo "✅ Fichier search_urls.txt trouvé"
+          echo "📋 Contenu:"
+          cat search_urls.txt
+
       - name: Phase 1 - Scrape Listings
         env:
-          START_URL: ${{ inputs.search_url }}
-          MAX_LISTINGS: ${{ inputs.max_listings }}
+          MAX_LISTINGS: ${{ inputs.max_listings_per_page }}
           MAX_MINUTES: "15"
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -99,3 +105,76 @@ jobs:
             echo "✅ Rapport Phase 2 disponible"
             echo "📥 Téléchargez les artifacts pour voir les détails"
           fi
+```
+
+---
+
+## 🔐 **CORRIGER LE SECRET GITHUB**
+
+**Va dans Settings → Secrets and variables → Actions** :
+
+1. Si le secret `N8N_WEBHOOK_URL` existe déjà, clique dessus puis **Update**
+2. Sinon, clique **New repository secret**
+3. Remplis :
+   - **Name** : `N8N_WEBHOOK_URL`
+   - **Value** : `https://n8n.srv843989.hstgr.cloud/webhook/airbnb-host-ai`
+4. **Save**
+
+---
+
+## 📋 **RÉCAPITULATIF DE CE QUI A CHANGÉ**
+
+### **✅ Nouveau fichier créé** :
+- `search_urls.txt` → Tu y colles tes 15 URLs de pages de recherche
+
+### **✅ Fichiers modifiés** :
+- `scrape_listings.py` → Lit maintenant `search_urls.txt` et traite TOUTES les pages
+- `.github/workflows/scrape-airbnb-ai.yml` → Ne demande plus l'URL en input, lit le fichier
+
+### **✅ URL webhook corrigée** :
+- `https://n8n.srv843989.hstgr.cloud/webhook/airbnb-host-ai`
+
+---
+
+## 🎯 **COMMENT UTILISER MAINTENANT**
+
+### **Étape 1 : Préparer tes URLs**
+
+Dans le fichier `search_urls.txt`, colle tes URLs (exemple) :
+```
+https://fr.airbnb.ca/s/JVC--Dubai--United-Arab-Emirates/homes?items_offset=0
+https://fr.airbnb.ca/s/JVC--Dubai--United-Arab-Emirates/homes?items_offset=18
+https://fr.airbnb.ca/s/JVC--Dubai--United-Arab-Emirates/homes?items_offset=36
+https://fr.airbnb.ca/s/Dubai-Marina--Dubai--United-Arab-Emirates/homes?items_offset=0
+https://fr.airbnb.ca/s/Dubai-Marina--Dubai--United-Arab-Emirates/homes?items_offset=18
+```
+
+### **Étape 2 : Lancer le workflow**
+
+1. Va dans **Actions**
+2. Clique **"Airbnb Scraper AI Vision"**
+3. Clique **"Run workflow"**
+4. Remplis :
+```
+   Nom de l'exécution : Dubai_Marina_JVC_Run1
+   Nombre max d'annonces PAR page : 20
+```
+5. Lance !
+
+**Le workflow va** :
+- Lire les 5 URLs dans `search_urls.txt`
+- Pour chaque URL, collecter jusqu'à 20 annonces
+- Total : ~100 annonces (5 pages × 20 annonces)
+- Scraper chaque annonce
+- Prendre screenshot de chaque hôte
+- Envoyer à n8n
+- Remplir Google Sheet
+
+---
+
+## 🧪 **TEST AVEC 2 URLs**
+
+Pour tester, mets juste 2 URLs dans `search_urls.txt` :
+```
+https://fr.airbnb.ca/s/Dubai/homes?items_offset=0
+https://fr.airbnb.ca/s/Dubai/homes?items_offset=18
