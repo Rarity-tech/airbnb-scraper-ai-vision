@@ -3,13 +3,27 @@ import os, csv, re, time, datetime
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-START_URL = os.getenv("START_URL", "https://www.airbnb.com/s/Dubai/homes")
-MAX_LIST = int(os.getenv("MAX_LISTINGS", "20"))
+SEARCH_URLS_FILE = "search_urls.txt"
+MAX_LIST_PER_URL = int(os.getenv("MAX_LISTINGS", "20"))
 MAX_MINUTES = float(os.getenv("MAX_MINUTES", "15"))
 OUT_CSV = "airbnb_results.csv"
 
 def now_iso():
     return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
+
+def read_search_urls():
+    """Lire les URLs depuis search_urls.txt"""
+    if not os.path.exists(SEARCH_URLS_FILE):
+        raise FileNotFoundError(f"❌ Fichier {SEARCH_URLS_FILE} introuvable!")
+    
+    with open(SEARCH_URLS_FILE, 'r', encoding='utf-8') as f:
+        urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+    
+    if not urls:
+        raise ValueError(f"❌ Aucune URL valide dans {SEARCH_URLS_FILE}")
+    
+    print(f"✅ {len(urls)} page(s) de recherche à traiter")
+    return urls
 
 def write_csv(rows, path=OUT_CSV):
     header = ["url", "title", "license_code", "host_profile_url", "scraped_at"]
@@ -34,38 +48,42 @@ def get_text_safe(loc, timeout=2500):
     except:
         return ""
 
-def goto_search_with_retry(page):
-    candidates = [START_URL]
-    last_err = None
-    
-    for url in candidates:
-        for _ in range(2):
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                click_if_present(page, 'button:has-text("Accepter")', 4000) or \
-                click_if_present(page, 'button:has-text("I agree")', 4000) or \
-                click_if_present(page, 'button:has-text("Accept")', 4000)
-                page.wait_for_selector('a[href^="/rooms/"]', timeout=30000)
-                print(f"✓ Navigation réussie")
-                return
-            except Exception as e:
-                last_err = e
+def goto_search_with_retry(page, url):
+    """Navigate vers une page de recherche"""
+    for attempt in range(3):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            click_if_present(page, 'button:has-text("Accepter")', 4000) or \
+            click_if_present(page, 'button:has-text("I agree")', 4000) or \
+            click_if_present(page, 'button:has-text("Accept")', 4000)
+            page.wait_for_selector('a[href^="/rooms/"]', timeout=30000)
+            print(f"  ✓ Navigation réussie")
+            return True
+        except Exception as e:
+            if attempt < 2:
+                print(f"  ⚠️ Tentative {attempt + 1} échouée, retry...")
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=30000)
                 except:
                     pass
-    raise last_err if last_err else RuntimeError("Navigation failed")
+            else:
+                print(f"  ❌ Échec après 3 tentatives: {e}")
+                return False
+    return False
 
-def collect_listing_urls(page, max_items, max_minutes):
-    goto_search_with_retry(page)
+def collect_listing_urls(page, search_url, max_items):
+    """Collecte les URLs d'annonces depuis UNE page de recherche"""
+    if not goto_search_with_retry(page, search_url):
+        return []
     
-    start = time.time()
     seen = set()
     last_h = 0
+    start = time.time()
     
-    print(f"🔍 Collecte des URLs d'annonces...")
+    print(f"  🔍 Collecte des annonces...")
     
-    while len(seen) < max_items and (time.time() - start) < (max_minutes * 60):
+    # Scroll et collecte (max 2 minutes par page)
+    while len(seen) < max_items and (time.time() - start) < 120:
         for a in page.locator('a[href^="/rooms/"]').all():
             try:
                 href = a.get_attribute("href") or ""
@@ -87,7 +105,7 @@ def collect_listing_urls(page, max_items, max_minutes):
         last_h = h
     
     urls = list(seen)[:max_items]
-    print(f"✅ Trouvé {len(urls)} annonces")
+    print(f"  ✅ {len(urls)} annonces trouvées")
     return urls
 
 RE_LICENSES = [
@@ -136,12 +154,10 @@ def extract_license_code(page):
 def find_host_url(page, listing_url):
     """Trouve l'URL du profil hôte"""
     try:
-        # Scroll pour charger le bloc hôte
         for _ in range(3):
             page.mouse.wheel(0, 1400)
             page.wait_for_timeout(250)
         
-        # Chercher liens /users/profile/ ou /users/show/
         all_links = page.locator('a[href*="/users/profile/"], a[href*="/users/show/"]').all()
         
         if all_links:
@@ -153,7 +169,7 @@ def find_host_url(page, listing_url):
                 except:
                     continue
     except Exception as e:
-        print(f"⚠️ Erreur extraction host URL: {e}")
+        print(f"    ⚠️ Erreur extraction host URL: {e}")
     
     return ""
 
@@ -170,20 +186,16 @@ def parse_listing(page, url):
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(600)
         
-        # Titre
         try:
             data["title"] = page.locator('meta[property="og:title"]').first.get_attribute("content") or ""
         except:
             data["title"] = get_text_safe(page.locator("h1"))
         
-        # Licence
         data["license_code"] = extract_license_code(page)
-        
-        # URL hôte
         data["host_profile_url"] = find_host_url(page, url)
         
     except Exception as e:
-        print(f"❌ Erreur pour {url}: {e}")
+        print(f"    ❌ Erreur: {e}")
     
     return data
 
@@ -191,7 +203,11 @@ def main():
     print("\n🚀 PHASE 1 : SCRAPING DES ANNONCES")
     print("=" * 60)
     
-    rows = []
+    # Lire les URLs de recherche depuis le fichier
+    search_urls = read_search_urls()
+    
+    all_listings = []
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -207,19 +223,40 @@ def main():
                    if route.request.resource_type in ["image", "font", "media"]
                    else route.continue_())
         
-        urls = collect_listing_urls(page, MAX_LIST, MAX_MINUTES)
+        # POUR CHAQUE PAGE DE RECHERCHE
+        for page_idx, search_url in enumerate(search_urls, 1):
+            print(f"\n{'='*60}")
+            print(f"📄 PAGE {page_idx}/{len(search_urls)}")
+            print(f"🔗 {search_url}")
+            print(f"{'='*60}")
+            
+            # Collecter les URLs d'annonces
+            listing_urls = collect_listing_urls(page, search_url, MAX_LIST_PER_URL)
+            
+            if not listing_urls:
+                print(f"  ⚠️ Aucune annonce trouvée, passage à la page suivante")
+                continue
+            
+            # Scraper chaque annonce
+            print(f"\n  📋 Scraping de {len(listing_urls)} annonces...\n")
+            for i, listing_url in enumerate(listing_urls, 1):
+                print(f"  [{i}/{len(listing_urls)}] {listing_url}")
+                result = parse_listing(page, listing_url)
+                all_listings.append(result)
+                print(f"    ✓ {result['title'][:50] if result['title'] else 'N/A'}...")
+                print(f"    ✓ Licence: {result['license_code'] or 'N/A'}")
+                print(f"    ✓ Host: {result['host_profile_url'][:50] if result['host_profile_url'] else 'N/A'}...")
+            
+            # Pause entre pages
+            if page_idx < len(search_urls):
+                print(f"\n  ⏳ Pause 5s avant la page suivante...")
+                time.sleep(5)
         
-        print(f"\n📋 Scraping de {len(urls)} annonces...")
-        for i, u in enumerate(urls, 1):
-            print(f"\n[{i}/{len(urls)}] {u}")
-            result = parse_listing(page, u)
-            rows.append(result)
-            print(f"  ✓ Titre: {result['title'][:50] if result['title'] else 'N/A'}...")
-            print(f"  ✓ Licence: {result['license_code'] or 'Non trouvée'}")
-            print(f"  ✓ Host URL: {result['host_profile_url'][:50] if result['host_profile_url'] else 'Non trouvée'}...")
-        
-        write_csv(rows)
-        print(f"\n✅ {len(rows)} annonces sauvegardées dans {OUT_CSV}")
+        write_csv(all_listings)
+        print(f"\n{'='*60}")
+        print(f"✅ PHASE 1 TERMINÉE")
+        print(f"📊 {len(all_listings)} annonces sauvegardées dans {OUT_CSV}")
+        print(f"{'='*60}\n")
         
         context.close()
         browser.close()
